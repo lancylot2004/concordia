@@ -12,15 +12,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Library of components specifically for generative agents."""
+"""A simple acting component that aggregates contexts from components."""
 
 from concordia.components.agent.v2 import action_spec_ignored
-from concordia.components.agent.v2 import all_similar_memories
-from concordia.components.agent.v2 import constant
-from concordia.components.agent.v2 import identity
-from concordia.components.agent.v2 import legacy_act_component
-from concordia.components.agent.v2 import no_op_context_processor
-from concordia.components.agent.v2 import observation
-from concordia.components.agent.v2 import report_function
-from concordia.components.agent.v2 import self_perception
-from concordia.components.agent.v2 import simple_act_component
+
+
+class Constant(action_spec_ignored.ActionSpecIgnored):
+  """A simple component that returns a constant.
+  """
+
+  def __init__(
+      self,
+      state: str,
+  ):
+    """Initializes the agent.
+
+    Args:
+      state: the state of the component.
+
+    Raises:
+      ValueError: If the component order is not None and contains duplicate
+        components.
+    """
+    self._state = state
+
+  def make_pre_act_context(self) -> str:
+    return self._state
+
+  def get_last_log(self):
+    return {'State': self._state}

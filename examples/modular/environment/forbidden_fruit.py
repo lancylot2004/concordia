@@ -548,7 +548,7 @@ def add_choice_scene_spec(
   action_spec = agent_lib.ActionSpec(
       call_to_action=(
           'Would {name} eat the fruit of the ' + f'{TREE}?'),
-      output_type='CHOICE',
+      output_type=agent_lib.OutputType.CHOICE,
       options=(defection_option, cooperation_option),
       tag='choice',
   )
@@ -1046,7 +1046,7 @@ class Simulation(Runnable):
     elif self._get_num_cataclysms(env=self._primary_environment) == 2:
       runner.run_scenes(
           environment=self._primary_environment,
-          scenes=self._scenes[2]['worst'],
+          scenes=self._scenes[2]['worse'],
           players=self._all_players,
           clock=self._clock,
       )
