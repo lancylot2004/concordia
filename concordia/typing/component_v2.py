@@ -16,6 +16,8 @@
 
 import abc
 from collections.abc import Mapping
+import enum
+from typing import Any
 
 from concordia.typing import entity as entity_lib
 
@@ -24,29 +26,87 @@ ComponentContext = str
 ComponentContextMapping = Mapping[ComponentName, ComponentContext]
 
 
-class BaseComponent:
+class Phase(enum.Enum):
+  """Phases of a component entity lifecycle.
+
+  Attributes:
+    INIT: The agent has just been created. No action has been requested nor
+      observation has been received. This can be followed by a call to `pre_act`
+      or `pre_observe`.
+    PRE_ACT: The agent has received a request to act. Components are being
+      requested for their action context. This will be followed by `POST_ACT`.
+    POST_ACT: The agent has just submitted an action attempt. Components are
+      being informed of the action attempt. This will be followed by
+      `UPDATE`.
+    PRE_OBSERVE: The agent has received an observation. Components are being
+      informed of the observation. This will be followed by `POST_OBSERVE`.
+    POST_OBSERVE: The agent has just observed. Components are given a chance to
+      provide context after processing the observation. This will be followed by
+      `UPDATE`.
+    UPDATE: The agent is about to update its internal state. This will be
+      followed by `PRE_ACT` or `PRE_OBSERVE`.
+  """
+  INIT = enum.auto()
+  PRE_ACT = enum.auto()
+  POST_ACT = enum.auto()
+  PRE_OBSERVE = enum.auto()
+  POST_OBSERVE = enum.auto()
+  UPDATE = enum.auto()
+
+
+class ComponentEntity(entity_lib.Entity):
+  """An entity that contains components."""
+
+  @abc.abstractmethod
+  def get_phase(self) -> Phase:
+    """Returns the current phase of the component entity."""
+    raise NotImplementedError()
+
+  @abc.abstractmethod
+  def get_component(self, component_name: str) -> "BaseComponent":
+    """Returns the component with the given name.
+
+    Args:
+      component_name: The name of the component to return.
+    """
+    raise NotImplementedError()
+
+
+class BaseComponent():
   """A base class for components."""
 
-  def __init__(self):
-    self._entity = None
+  _entity: ComponentEntity | None = None
 
-  def set_entity(self, entity: entity_lib.Entity) -> None:
-    """Sets the entity that this component belongs to."""
+  def set_entity(self, entity: ComponentEntity) -> None:
+    """Sets the entity that this component belongs to.
+
+    Args:
+      entity: The entity that this component belongs to.
+
+    Raises:
+      RuntimeError: If the entity is already set.
+    """
+    if self._entity is not None:
+      raise RuntimeError("Entity is already set.")
     self._entity = entity
 
-  def get_entity(self) -> entity_lib.Entity:
+  def get_entity(self) -> ComponentEntity:
     """Returns the entity that this component belongs to.
 
     Raises:
-      ValueError: If the entity is not set.
+      RuntimeError: If the entity is not set.
     """
     if self._entity is None:
-      raise ValueError("Entity is not set.")
+      raise RuntimeError("Entity is not set.")
     return self._entity
+
+  def get_last_log(self) -> Mapping[str, Any]:
+    """Returns a dictionary with latest log of activity."""
+    return {}
 
 
 class EntityComponent(BaseComponent):
-  """A building block of an entity.
+  """A building block of a ComponentEntity.
 
   Components are stand-alone pieces of functionality insterted into a GameObject
   that have hooks for processing events for acting and observing.
@@ -130,12 +190,6 @@ class EntityComponent(BaseComponent):
     received a `post_act` or `post_observe` call. This is an opportunity for the
     component to update its internal state, and replace any cached information.
     """
-
-  def get_last_log(
-      self,
-  ):
-    """Returns a dictionary with latest log of activity."""
-    return None
 
 
 class ActingComponent(BaseComponent, metaclass=abc.ABCMeta):
