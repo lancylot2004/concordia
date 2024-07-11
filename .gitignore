@@ -23,3 +23,6 @@ __pycache__/
 
 # Type checking
 .pytype
+.gitsecret/keys/random_seed
+!*.secret
+examples/coin/.openai_key
