@@ -10,7 +10,6 @@ from concordia.document.interactive_document import InteractiveDocument
 from concordia.language_model.language_model import LanguageModel
 from concordia.typing.component import Component
 
-
 class CoinCell(Enum):
     RED = 'R'
     BLUE = 'B'
@@ -78,14 +77,6 @@ class CoinGrid:
     def coin_colour(self) -> str:
         return self._coin_colour
 
-
-if __name__ == '__main__':
-    grid = CoinGrid(5, 5)
-    print(grid)
-    print('\n')
-    grid.move(CoinCell.RED, Direction.RIGHT)
-    print(grid)
-
 """Tracks the current state of the coin game."""
 class CoinState(Component):
     def __init__(
@@ -117,7 +108,7 @@ class CoinState(Component):
     def state(self) -> str:
         with self._lock:
             return f"Red: {self._red_points}, Blue: {self._blue_points}, Grid: {self._width}x{self._height}\n" \
-                   + self._grid.__str__()
+                   + self._grid.__str__() + '\n'
 
     # Override
     def partial_state(self, player_name: str) -> str | None:
@@ -127,29 +118,48 @@ class CoinState(Component):
     # Override
     def update(self) -> None:
         with self._lock:
-            self._update_player_state("Red", self._red_memory)
-            self._update_player_state("Blue", self._blue_memory)
+            self._update_player(CoinCell.RED, self._red_memory)
+            self._update_player(CoinCell.BLUE, self._blue_memory)
 
-    def _update_player_state(self, player_name: str, memory: AssociativeMemory) -> None:
+
+    def _update_player(self, player: CoinCell, memory: AssociativeMemory) -> None:
         action = memory.retrieve_recent()
         prompt = InteractiveDocument(self._model)
         prompt.statement(f"Action: {action}\n")
         direction = prompt.open_question(
-            f'Given the above action carried out by {player_name}, in',
-            f'which direction did {player_name} move? Answer with "up"',
+            f'Given the above action carried out by {player.value}, in',
+            f'which direction did {player.value} move? Answer with "up"',
             f'"down", "left", or "right".',
         )
 
-        self.move_player(player_name, direction)
+        match direction.lower():
+            case "up": direction = Direction.UP
+            case "down": direction = Direction.DOWN
+            case "left": direction = Direction.LEFT
+            case "right": x = Direction.RIGHT
+        assert direction in Direction, f"Invalid direction {direction}!"
+
+        self._grid.move(player, direction)
+
         if self._verbose:
             print(prompt.view().text())
 
         self._history.append({
             'date': self._clock_call(),
             'state': self.state(),
-            'player': player_name,
+            'player': player.value,
             'status': f'Moved {direction}',
         })
+
+    def _update_game(self) -> None:
+        if not self.terminate_episode(): return
+
+        if self._grid.blue_position == self._grid.coin_position:
+            self._blue_points += 1 if self._grid.coin_colour == CoinColour.BLUE else -2
+        if self._grid.red_position == self._grid.coin_position:
+            self._red_points += 1 if self._grid.coin_colour == CoinColour.RED else -2
+
+        self._grid.new_round()
 
     # Override
     def terminate_episode(self) -> bool:
@@ -160,48 +170,3 @@ class CoinState(Component):
         with self._lock:
             if self._history:
                 return self._history[-1].copy()
-
-    def move_player(self, player: str, direction: str) -> None:
-        with self._lock:
-            match player:
-                case "Red": position = self._red_position
-                case "Blue": position = self._blue_position
-                case _: raise ValueError(f"Invalid player: {player}")
-
-            x, y = position
-            match direction.lower():
-                case "up": y = max(0, y - 1)
-                case "down": y = min(self._height - 1, y + 1)
-                case "left": x = max(0, x - 1)
-                case "right": x = min(self._width - 1, x + 1)
-                case _: raise ValueError(f"Invalid direction: {direction}")
-
-            self._grid[position] = CoinCell.EMPTY
-
-            self._check_coin_reached()
-
-    def _check_coin_reached(self) -> None:
-        if self._red_position == self._coin_position:
-            self._handle_coin_pickup("Red")
-        if self._blue_position == self._coin_position:
-            self._handle_coin_pickup("Blue")
-
-    def _handle_coin_pickup(self, player: str) -> None:
-        match (player, self._grid.coin_colour):
-            case ("Red", CoinColour.RED): self._red_points += 1
-            case ("Red", "blue"): self._red_points -= 2
-            case ("Blue", "blue"): self._blue_points += 1
-            case ("Blue", "red"): self._blue_points -= 2
-
-        if player_name == "Red":
-            if self._coin_color == "red":
-                self._red_points += 1
-            else:
-                self._red_points += 1
-                self._blue_points -= 2
-        elif player_name == "Blue":
-            if self._coin_color == "blue":
-                self._blue_points += 1
-            else:
-                self._blue_points += 1
-                self._red_points -= 2
