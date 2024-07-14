@@ -2,6 +2,7 @@ from datetime import datetime
 from email import generator
 from enum import Enum
 from random import choice, sample
+from re import search
 from threading import Lock
 from typing import Callable
 
@@ -115,35 +116,26 @@ class CoinState(Component):
         # The coin game is fully observable for all players.
         return self.state()
 
-    # Override
-    def update(self) -> None:
+    def update_after_event(self, event_statement: str) -> None:
         with self._lock:
             self._update_player(CoinCell.RED, self._red_memory)
             self._update_player(CoinCell.BLUE, self._blue_memory)
 
-
     def _update_player(self, player: CoinCell, memory: AssociativeMemory) -> None:
-        action = memory.retrieve_recent()
-        prompt = InteractiveDocument(self._model)
-        prompt.statement(f"Action: {action}\n")
-        direction = prompt.open_question(
-            f'Given the above action carried out by {player.value}, in',
-            f'which direction did {player.value} move? Answer with "up"',
-            f'"down", "left", or "right".',
-        )
+        action = memory.retrieve_by_regex(r".", sort_by_time = True)[-1]
+        direction = search(r"(up|down|left|right)", action.lower())
+        if direction is None: return
 
-        match direction.lower():
+        match direction.group(0):
             case "up": direction = Direction.UP
             case "down": direction = Direction.DOWN
             case "left": direction = Direction.LEFT
-            case "right": x = Direction.RIGHT
+            case "right": direction = Direction.RIGHT
         assert direction in Direction, f"Invalid direction {direction}!"
 
         self._grid.move(player, direction)
-
         if self._verbose:
-            print(prompt.view().text())
-
+            print(f"Player {player.value} moved {direction}!")
         self._history.append({
             'date': self._clock_call(),
             'state': self.state(),
