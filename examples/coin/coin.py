@@ -1,15 +1,17 @@
 from datetime import datetime
 from email import generator
 from enum import Enum
-from random import choice, sample
+from random import choice
+from random import sample
 from re import search
-from threading import Lock
+from threading import RLock
 from typing import Callable
 
 from concordia.associative_memory.associative_memory import AssociativeMemory
 from concordia.document.interactive_document import InteractiveDocument
 from concordia.language_model.language_model import LanguageModel
 from concordia.typing.component import Component
+
 
 class CoinCell(Enum):
     RED = 'R'
@@ -79,86 +81,134 @@ class CoinGrid:
         return self._coin_colour
 
 """Tracks the current state of the coin game."""
-class CoinState(Component):
-    def __init__(
-        self,
-        clock_now: Callable[[], datetime],
-        model: LanguageModel,
-        red_memory: AssociativeMemory,
-        blue_memory: AssociativeMemory,
-        width: int,
-        height: int,
-        verbose: bool = True,
-    ) -> None:
-        super().__init__()
-        self._lock = Lock()
-        self._clock_call = clock_now
-        self._model = model
+class CoinState:
+    """Global singleton instance of CoinState."""
+    _instance = None
+
+    @staticmethod
+    def get() -> 'CoinState':
+        """Gets the global [CoinState] singleton object."""
+        if CoinState._instance == None:
+            raise Exception("[CoinState] object does not exist yet!")
+        return CoinState._instance
+
+    def __init__(self, width: int, height: int, verbose: bool = True) -> None:
+        if CoinState._instance != None:
+            raise Exception("[CoinState] object already created!")
+        else:
+            CoinState._instance = self
+
+        self._lock = RLock()
         self._red_points, self._blue_points = 0, 0
-        self._red_memory, self._blue_memory = red_memory, blue_memory
         self._width, self._height = width, height
         self._grid = CoinGrid(width, height)
         self._verbose = verbose
         self._history = []
 
+    @staticmethod
+    def setup(**kwargs) -> None:
+        CoinState._instance = None
+        CoinState(**kwargs)
+
+    def state(self) -> str:
+        with self._lock:
+            return f"Red: {self._red_points}, Blue: {self._blue_points}\n" \
+                + f"Grid: {self._width}x{self._height}, Coin Colour: {self._grid.coin_colour}\n" \
+                + self._grid.__str__() + '\n'
+
+    def update(self, player: CoinCell, direction: Direction) -> None:
+        with self._lock:
+            self._grid.move(player, direction)
+            if player == CoinCell.BLUE and self._grid.blue_position == self._grid.coin_position:
+                self._blue_points += 1 if self._grid.coin_colour == CoinColour.BLUE else -2
+            if player == CoinCell.RED and self._grid.red_position == self._grid.coin_position:
+                self._red_points += 1 if self._grid.coin_colour == CoinColour.RED else -2
+
+
+            if self._verbose:
+                print(f"Player {player.value} moved {direction}!")
+                print(self.state())
+            self._history.append({
+                'date': self._clock_call(),
+                'state': self.state(),
+                'player': player.value,
+                'status': f'Moved {direction}',
+            })
+
+    # Override
+    def game_over(self) -> bool:
+        with self._lock:
+            if self._grid.blue_position == self._grid.coin_position \
+                or self._grid.red_position == self._grid.coin_position:
+                # Reset the game before signalling termination of episode.
+                self._grid.new_round()
+                return True
+            return False
+
+class CoinMaster(Component):
+    def __init__(self) -> None:
+        super().__init__()
+        self._lock = RLock()
+
     # Override
     def name(self) -> str:
-        return "State of Coin Game"
+        return "Coin Game Component for the Game Master"
 
     # Override
     def state(self) -> str:
         with self._lock:
-            return f"Red: {self._red_points}, Blue: {self._blue_points}, Grid: {self._width}x{self._height}\n" \
-                   + self._grid.__str__() + '\n'
-
-    # Override
-    def partial_state(self, player_name: str) -> str | None:
-        # The coin game is fully observable for all players.
-        return self.state()
-
-    def update_after_event(self, event_statement: str) -> None:
-        with self._lock:
-            self._update_player(CoinCell.RED, self._red_memory)
-            self._update_player(CoinCell.BLUE, self._blue_memory)
-
-    def _update_player(self, player: CoinCell, memory: AssociativeMemory) -> None:
-        action = memory.retrieve_by_regex(r".", sort_by_time = True)[-1]
-        direction = search(r"(up|down|left|right)", action.lower())
-        if direction is None: return
-
-        match direction.group(0):
-            case "up": direction = Direction.UP
-            case "down": direction = Direction.DOWN
-            case "left": direction = Direction.LEFT
-            case "right": direction = Direction.RIGHT
-        assert direction in Direction, f"Invalid direction {direction}!"
-
-        self._grid.move(player, direction)
-        if self._verbose:
-            print(f"Player {player.value} moved {direction}!")
-        self._history.append({
-            'date': self._clock_call(),
-            'state': self.state(),
-            'player': player.value,
-            'status': f'Moved {direction}',
-        })
-
-    def _update_game(self) -> None:
-        if not self.terminate_episode(): return
-
-        if self._grid.blue_position == self._grid.coin_position:
-            self._blue_points += 1 if self._grid.coin_colour == CoinColour.BLUE else -2
-        if self._grid.red_position == self._grid.coin_position:
-            self._red_points += 1 if self._grid.coin_colour == CoinColour.RED else -2
-
-        self._grid.new_round()
+            return CoinState.get().state()
 
     # Override
     def terminate_episode(self) -> bool:
-        return self._grid.blue_position == self._grid.coin_position \
-               or self._grid.red_position == self._grid.coin_position
+        return CoinState.get().game_over()
 
+class CoinPlayer(Component):
+    def __init__(self, player: CoinCell) -> None:
+        super().__init__()
+        self._lock = RLock()
+
+        assert player in [CoinCell.RED, CoinCell.BLUE]
+        self._player = player
+
+    # Override
+    def name(self) -> str:
+        return  "Coin Game Component for Players"
+
+    # Override
+    def state(self) -> str:
+        with self._lock:
+            return CoinState.get().state()
+
+    # Override
+    def update_after_event(self, event_statement: str) -> None:
+        with self._lock:
+            action = event_statement.lower()
+
+            direction = search(r"(up|down|left|right)", action)
+            if direction is None: return
+
+            match direction.group(0):
+                case "up": direction = Direction.UP
+                case "down": direction = Direction.DOWN
+                case "left": direction = Direction.LEFT
+                case "right": direction = Direction.RIGHT
+            assert direction in Direction, f"Invalid direction {direction}!"
+
+            CoinState.get().update(self._player, direction)
+
+            if self._verbose:
+                print(f"Player {self._player.value} moved {direction}!")
+                print(self.state())
+            CoinState.get()._history.append({
+                'date': self._clock_call(),
+                'state': self.state(),
+                'player': self._player.value,
+                'status': f'Moved {direction}',
+            })
+
+    # Override
     def get_last_log(self):
         with self._lock:
-            if self._history:
-                return self._history[-1].copy()
+            if CoinState.get()._history:
+                return CoinState.get()._history[-1].copy()
