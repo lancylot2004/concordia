@@ -17,13 +17,14 @@
 import abc
 from collections.abc import Mapping
 import enum
-from typing import Any
+from typing import Any, TypeVar
 
 from concordia.typing import entity as entity_lib
 
 ComponentName = str
 ComponentContext = str
 ComponentContextMapping = Mapping[ComponentName, ComponentContext]
+ComponentT = TypeVar("ComponentT", bound="BaseComponent")
 
 
 class Phase(enum.Enum):
@@ -54,30 +55,12 @@ class Phase(enum.Enum):
   UPDATE = enum.auto()
 
 
-class ComponentEntity(entity_lib.Entity):
-  """An entity that contains components."""
-
-  @abc.abstractmethod
-  def get_phase(self) -> Phase:
-    """Returns the current phase of the component entity."""
-    raise NotImplementedError()
-
-  @abc.abstractmethod
-  def get_component(self, component_name: str) -> "BaseComponent":
-    """Returns the component with the given name.
-
-    Args:
-      component_name: The name of the component to return.
-    """
-    raise NotImplementedError()
-
-
-class BaseComponent():
+class BaseComponent:
   """A base class for components."""
 
-  _entity: ComponentEntity | None = None
+  _entity: "EntityWithComponents | None" = None
 
-  def set_entity(self, entity: ComponentEntity) -> None:
+  def set_entity(self, entity: "EntityWithComponents") -> None:
     """Sets the entity that this component belongs to.
 
     Args:
@@ -90,7 +73,7 @@ class BaseComponent():
       raise RuntimeError("Entity is already set.")
     self._entity = entity
 
-  def get_entity(self) -> ComponentEntity:
+  def get_entity(self) -> "EntityWithComponents":
     """Returns the entity that this component belongs to.
 
     Raises:
@@ -105,8 +88,32 @@ class BaseComponent():
     return {}
 
 
-class EntityComponent(BaseComponent):
-  """A building block of a ComponentEntity.
+class EntityWithComponents(entity_lib.Entity):
+  """An entity that contains components."""
+
+  @abc.abstractmethod
+  def get_phase(self) -> Phase:
+    """Returns the current phase of the component entity."""
+    raise NotImplementedError()
+
+  @abc.abstractmethod
+  def get_component(
+      self,
+      name: str,
+      *,
+      type_: type[ComponentT] = BaseComponent,
+  ) -> ComponentT:
+    """Returns the component with the given name.
+
+    Args:
+      name: The name of the component to fetch.
+      type_: If passed, the returned component will be cast to this type.
+    """
+    raise NotImplementedError()
+
+
+class ContextComponent(BaseComponent):
+  """A building block of a EntityWithComponents.
 
   Components are stand-alone pieces of functionality insterted into a GameObject
   that have hooks for processing events for acting and observing.
@@ -219,19 +226,36 @@ class ActingComponent(BaseComponent, metaclass=abc.ABCMeta):
 
 
 class ContextProcessorComponent(BaseComponent, metaclass=abc.ABCMeta):
-  """A component that processes context from components."""
+  """A component that processes context from EntityWithComponents."""
 
-  @abc.abstractmethod
-  def process(
-      self,
-      contexts: ComponentContextMapping,
-  ) -> None:
-    """Processes the context from components.
+  def pre_act(self, contexts: ComponentContextMapping) -> None:
+    """Processes the pre_act contexts returned by the EntityWithComponents.
 
-    This function will be called by the entity with the context from other
-    components. The component should process the context and possibly update its
-    internal state or access other components.
+    Args:
+      contexts: A mapping from ComponentName to ComponentContext.
+    """
+    del contexts
+
+  def post_act(self, contexts: ComponentContextMapping) -> None:
+    """Processes the post_act contexts returned by the EntityWithComponents.
+
+    Args:
+      contexts: A mapping from ComponentName to ComponentContext.
+    """
+    del contexts
+
+  def pre_observe(self, contexts: ComponentContextMapping) -> None:
+    """Processes the pre_observe contexts returned by the EntityWithComponents.
+
+    Args:
+      contexts: A mapping from ComponentName to ComponentContext.
+    """
+    del contexts
+
+  def post_observe(self, contexts: ComponentContextMapping) -> None:
+    """Processes the post_observe contexts returned by the EntityWithComponents.
 
     Args:
       contexts: The context from other components.
     """
+    del contexts
