@@ -37,7 +37,13 @@ class CoinGrid:
         self.new_round()
 
     def __str__(self) -> str:
-        return '\n'.join(''.join(self._get_cell_repr(x, y) for x in range(self._width)) for y in range(self._height))
+        return '\n'.join(
+            ''.join(
+                self._get_cell_repr(x, y)
+                for x in range(self._width))
+                for y in range(self._height
+            )
+        )
 
     def _get_cell_repr(self, x, y) -> str:
         for cell_type, pos in self._grid.items():
@@ -112,9 +118,10 @@ class CoinState:
 
     def state(self) -> str:
         with self._lock:
-            return f"Red: {self._red_points}, Blue: {self._blue_points}\n" \
-                + f"Grid: {self._width}x{self._height}, Coin Colour: {self._grid.coin_colour}\n" \
-                + self._grid.__str__() + '\n'
+            return f"    Red: {self._red_points}, Blue: {self._blue_points}, " \
+                + f"Grid: {self._width}x{self._height}, " \
+                + f"Coin Colour: {self._grid.coin_colour}\n    " \
+                + self._grid.__str__().replace('\n', '\n    ')
 
     def update(self, player: CoinCell, direction: Direction) -> None:
         with self._lock:
@@ -135,7 +142,6 @@ class CoinState:
                 'status': f'Moved {direction}',
             })
 
-    # Override
     def game_over(self) -> bool:
         with self._lock:
             if self._grid.blue_position == self._grid.coin_position \
@@ -173,7 +179,7 @@ class CoinPlayer(Component):
 
     # Override
     def name(self) -> str:
-        return  "Coin Game Component for Players"
+        return  "Observation of the Coin Grid"
 
     # Override
     def state(self) -> str:
