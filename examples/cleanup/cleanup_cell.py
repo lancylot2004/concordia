@@ -27,7 +27,7 @@ class River(CleanupCell):
 
         Args:
             pollution_rate (float): The likelyhood of this cell to become
-                polluted in the next turn.
+            polluted in the next turn.
         """
 
         self._pollution_rate = pollution_rate
@@ -55,7 +55,7 @@ class Orchard(CleanupCell):
 
         Args:
             spawn_rate (float): The likelyhood of this cell to spawn an apple
-                in the next turn.
+            in the next turn.
         """
 
         self._spawn_rate = spawn_rate
