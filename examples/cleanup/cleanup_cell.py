@@ -6,7 +6,8 @@ from random import random
 class CleanupCell(ABC):
     """A cell in the grid of a game of Cleanup."""
 
-    @property @abstractmethod
+    @property
+    @abstractmethod
     def repr(self) -> str:
         """The one-unicode character readable representation of this cell."""
         pass
@@ -35,7 +36,7 @@ class River(CleanupCell):
 
     @property
     def repr(self) -> str:
-        return 'R' if self._polluted else 'P'
+        return 'P' if self._polluted else 'R'
 
     @property
     def polluted(self) -> bool:

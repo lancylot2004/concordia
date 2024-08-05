@@ -8,3 +8,6 @@ class CleanupGame:
     In each turn, players can choose one action from the set
     {move_{wasd}, pick_up, clean_up_{wasd}, zap_{wasd}}.
     """
+
+    def __init__(self) -> None:
+        pass
