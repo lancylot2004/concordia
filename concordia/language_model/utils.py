@@ -24,6 +24,7 @@ from concordia.language_model import no_language_model
 from concordia.language_model import ollama_model
 from concordia.language_model import pytorch_gemma_model
 from concordia.language_model import together_ai
+from concordia.language_model import local_model
 
 
 def language_model_setup(
@@ -72,5 +73,7 @@ def language_model_setup(
     return pytorch_gemma_model.PyTorchGemmaLanguageModel(model_name)
   elif api_type == 'together_ai':
     return together_ai.Gemma2(model_name, api_key=api_key)
+  elif api_type == 'local':
+    return local_model.LocalModel()
   else:
     raise ValueError(f'Unrecognized api type: {api_type}')
