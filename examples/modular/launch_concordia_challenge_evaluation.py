@@ -273,7 +273,7 @@ tasks = {
     )
     for (name, config) in scenarios_lib.SCENARIO_CONFIGS.items()
 }
-evaluation_results = concurrency.run_tasks(tasks)
+evaluation_results = {name: task() for name, task in tasks.items()}
 
 # Save evaluation results for all scenarios with this agent to one json file.
 json_filename = (

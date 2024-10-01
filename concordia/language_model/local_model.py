@@ -18,12 +18,12 @@ Recommended model name is 'google/gemma-2-9b-it'
 """
 
 from collections.abc import Collection, Sequence
-import concurrent.futures
-from transformers import AutoTokenizer, pipeline
-import torch
+
 from concordia.language_model import language_model
 from concordia.utils import measurements as measurements_lib
 import numpy as np
+import torch
+from transformers import AutoModelForCausalLM, Gemma2ForCausalLM, AutoTokenizer
 from typing_extensions import override
 
 _DEFAULT_MAX_TOKENS = 5000
@@ -45,29 +45,26 @@ class LocalModel(language_model.LanguageModel):
         channel: The channel to write the statistics to.
         """
 
-        self._pipe = pipeline(
-            "text-generation",
-            model = "google/gemma-2-9b-it",
-            model_kwargs = { "torch_dtype": torch.bfloat16 },
-            device = "auto",
-        )
+        # model_id = "bartowski/gemma-2-9b-it-GGUF"
+        # filename = "gemma-2-9b-it-IQ4_XS.gguf"
+
+        model_id = "google/gemma-2-2b-it"
+
+        self._tokeniser = AutoTokenizer.from_pretrained(model_id)
+        self._model = AutoModelForCausalLM.from_pretrained(model_id)
+        self._model.to("mps")
+
+        self._tokeniser: AutoTokenizer
+        self._model: Gemma2ForCausalLM
+
         self._measurements = measurements
         self._channel = channel
 
-    @override
-    def sample_text(
-        self,
-        prompt: str,
-        *,
-        max_tokens: int = language_model.DEFAULT_MAX_TOKENS,
-        terminators: Collection[str] = language_model.DEFAULT_TERMINATORS,
-        temperature: float = language_model.DEFAULT_TEMPERATURE,
-        timeout: float = language_model.DEFAULT_TIMEOUT_SECONDS,
-        seed: int | None = None,
-    ) -> str:
-        messages = [
+    @staticmethod
+    def _construct_messages(prompt: str) -> list[dict[str, str]]:
+        return [
             {
-                'role': 'system',
+                'role': 'user',
                 'content': (
                     'You always continue sentences provided '
                     'by the user and you never repeat what '
@@ -76,11 +73,8 @@ class LocalModel(language_model.LanguageModel):
                     'always delimit list items using either '
                     r"semicolons or single newline characters ('\n'), never "
                     r"delimit list items with double carriage returns ('\n\n')."
+                    "Question: Is Jake a turtle?\nAnswer: Jake is "
                 ),
-            },
-            {
-                'role': 'user',
-                'content': 'Question: Is Jake a turtle?\nAnswer: Jake is ',
             },
             {'role': 'assistant', 'content': 'not a turtle.'},
             {
@@ -94,11 +88,37 @@ class LocalModel(language_model.LanguageModel):
             {'role': 'user', 'content': prompt},
         ]
 
+    @override
+    def sample_text(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int = language_model.DEFAULT_MAX_TOKENS,
+        terminators: Collection[str] = language_model.DEFAULT_TERMINATORS,
+        temperature: float = language_model.DEFAULT_TEMPERATURE,
+        timeout: float = language_model.DEFAULT_TIMEOUT_SECONDS,
+        seed: int | None = None,
+    ) -> str:
         # gemma2 does not support `tokens` + `max_new_tokens` > 8193.
         # gemma2 interprets our `max_tokens`` as their `max_new_tokens`.
         max_tokens = min(max_tokens, _DEFAULT_MAX_TOKENS)
-        outputs = self._pipe(messages, max_new_tokens = max_tokens, seed = seed, temperature = temperature)
-        result = outputs[0]["generated_text"][-1]
+
+        messages = self._construct_messages(prompt)
+        print(f"Sending: {len(messages)}, ", end = "")
+
+        ids = self._tokeniser \
+            .apply_chat_template(messages, return_tensors = 'pt') \
+            .to(self._model.device)
+        print(f"with {len(ids)} tokens, ", end = "")
+        outputs = self._model.generate(
+            ids,
+            max_new_tokens = max_tokens,
+            do_sample = True,
+            temperature = temperature,
+            seed = seed,
+        )
+        result = self._tokeniser.decode(outputs[0], skip_special_tokens = True)
+        print(f"completed.")
 
         if self._measurements is not None:
             self._measurements.publish_datum(
@@ -120,53 +140,27 @@ class LocalModel(language_model.LanguageModel):
         seed: int | None = None,
     ) -> tuple[int, str, dict[str, float]]:
 
-        def _sample_choice(response: str) -> float:
+        def _score_response(response: str) -> float:
             augmented_prompt = prompt + response
-            messages = [
-                {
-                    'role': 'system',
-                    'content': (
-                        'You always continue sentences provided '
-                        + 'by the user and you never repeat what '
-                        + 'the user already said.'
-                    ),
-                },
-                {
-                    'role': 'user',
-                    'content': 'Question: Is Jake a turtle?\nAnswer: Jake is ',
-                },
-                {'role': 'assistant', 'content': 'not a turtle.'},
-                {
-                    'role': 'user',
-                    'content': (
-                        'Question: What is Priya doing right now?\nAnswer: '
-                        + 'Priya is currently '
-                    ),
-                },
-                {'role': 'assistant', 'content': 'sleeping.'},
-                {'role': 'user', 'content': augmented_prompt},
-            ]
+            messages = self._construct_messages(augmented_prompt)
 
-            outputs = self._pipe(messages, max_new_tokens=_DEFAULT_MAX_TOKENS, seed=seed)
-            result = outputs[0]["generated_text"][-1]
+            input_ids = self._tokeniser \
+                .apply_chat_template(messages, return_tensors='pt') \
+                .to(self._model.device)
 
-            # Calculate log probabilities
-            tokenizer = AutoTokenizer.from_pretrained("google/gemma-2-9b-it")
-            tokens = tokenizer(result, return_tensors="pt").input_ids
             with torch.no_grad():
-                outputs = self._pipe.model(tokens, labels=tokens)
-            logprobs = -outputs.loss.item() * tokens.size(1)
+                outputs = self._model(input_ids=input_ids, labels=input_ids)
 
-            return logprobs
+                loss = outputs.loss
+                score = -loss.item()
 
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            logprobs_np = np.array(
-                list(executor.map(_sample_choice, responses))
-            ).reshape(-1)
+            return score
 
-        idx = np.argmax(logprobs_np)
+        # Score each response
+        scores = np.array([_score_response(r) for r in responses])
 
-        # Get the corresponding response string
+        # Find the index of the highest score
+        idx = np.argmax(scores)
         max_str = responses[idx]
 
-        return idx, max_str, {r: logprobs_np[i] for i, r in enumerate(responses)}
+        return idx, max_str, {r: scores[i] for i, r in enumerate(responses)}
