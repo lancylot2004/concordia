@@ -20,6 +20,7 @@ Recommended model name is 'google/gemma-2-9b-it'
 from collections.abc import Collection, Sequence
 import logging
 from textwrap import dedent
+from threading import Lock
 
 from concordia.language_model import language_model
 from concordia.utils import measurements as measurements_lib
@@ -33,6 +34,8 @@ _MAX_MULTIPLE_CHOICE_ATTEMPTS = 20
 
 class LocalModel(language_model.LanguageModel):
     """Language Model that runs Gemma-2 locally."""
+
+    _lock = Lock()
 
     def __init__(
         self,
@@ -51,9 +54,10 @@ class LocalModel(language_model.LanguageModel):
 
         logging.info(f"Loading Llama model")
         self._model = Llama.from_pretrained(
-            repo_id = "TheBloke/Mistral-7B-Instruct-v0.2-GGUF",
-            filename = "*.Q4_K_M.gguf",
+            repo_id = "bartowski/gemma-2-9b-it-GGUF",
+            filename = "gemma-2-9b-it-IQ4_XS.gguf",
             verbose = False,
+            n_ctx = 2048,
         )
         self._model : Llama
 
@@ -64,15 +68,12 @@ class LocalModel(language_model.LanguageModel):
     def _construct_messages(prompt: str) -> list[dict[str, str]]:
         return [
             {
-                "role": "system",
+                "role": "user",
                 "content": (
                     "You always continue sentences provided by the user and "
-                    "you never repeat what the user already said."
+                    "you never repeat what the user already said. Question: "
+                    "Is Jake a turtle?\nAnswer: Jake is "
                 )
-            },
-            {
-                "role": "user",
-                "content": "Question: Is Jake a turtle?\nAnswer: Jake is "
             },
             { "role": "assistant", "content": "not a turtle." },
             {
@@ -102,30 +103,31 @@ class LocalModel(language_model.LanguageModel):
         timeout: float = language_model.DEFAULT_TIMEOUT_SECONDS,
         seed: int | None = None,
     ) -> str:
-        max_tokens = min(max_tokens, _DEFAULT_MAX_TOKENS)
+        with LocalModel._lock:
+            max_tokens = min(max_tokens, _DEFAULT_MAX_TOKENS)
 
-        messages = self._construct_messages(prompt)
-        logging.info(f"Sending prompt with {len(prompt)} characters, beginning with: '{LocalModel._remove_newlines(prompt[:32])}'.")
+            messages = self._construct_messages(prompt)
+            logging.info(f"Sending prompt with {len(prompt)} characters, beginning with: '{LocalModel._remove_newlines(prompt[:32])}'.")
 
-        result = self._model.create_chat_completion(
-            messages,
-            temperature = temperature,
-            seed = seed,
-            max_tokens = max_tokens,
-        )["choices"][0]["message"]["content"]
+            result = self._model.create_chat_completion(
+                messages,
+                temperature = temperature,
+                seed = seed,
+                max_tokens = max_tokens,
+            )["choices"][0]["message"]["content"]
 
-        logging.info(f"Generated response with {len(result)} characters, beginning with: '{LocalModel._remove_newlines(result[:32])}'.")
+            logging.info(f"Generated response with {len(result)} characters, beginning with: '{LocalModel._remove_newlines(result[:32])}'.")
 
-        if self._measurements is not None:
-            self._measurements.publish_datum(
-                self._channel,
-                {'raw_text_length': len(result)},
-            )
-        # Remove the occasional sentence fragment from the end of the result.
-        last_stop = result.rfind('.')
-        if last_stop >= 0:
-            result = result[: last_stop + 1]
-        return result
+            if self._measurements is not None:
+                self._measurements.publish_datum(
+                    self._channel,
+                    {'raw_text_length': len(result)},
+                )
+            # Remove the occasional sentence fragment from the end of the result.
+            last_stop = result.rfind('.')
+            if last_stop >= 0:
+                result = result[: last_stop + 1]
+            return result
 
     @override
     def sample_choice(
@@ -135,45 +137,49 @@ class LocalModel(language_model.LanguageModel):
         *,
         seed: int | None = None,
     ) -> tuple[int, str, dict[str, float]]:
-        prompt = dedent(f"""
-            {prompt}
+        with LocalModel._lock:
+            prompt = dedent(f"""
+                {prompt}
 
-            Pick one best response:
-            {" ".join(f"({i}) {response}" for i, response in enumerate(responses))}
-        """)
+                Pick one best response:
+                {" ".join(response for response in responses)}
+            """)
 
-        for attempts in range(_MAX_MULTIPLE_CHOICE_ATTEMPTS):
-            # Increase temperature after the first failed attempt.
-            temperature = dynamically_adjust_temperature(attempts, _MAX_MULTIPLE_CHOICE_ATTEMPTS)
+            logging.info(f"Sampling choice out of {responses}.")
 
-            messages = self._construct_messages(prompt)
-            logging.info(f"Sending prompt with {len(prompt)} characters, beginning with: '{LocalModel._remove_newlines(prompt[:32])}'.")
+            for attempts in range(_MAX_MULTIPLE_CHOICE_ATTEMPTS):
+                # Increase temperature after the first failed attempt.
+                temperature = dynamically_adjust_temperature(attempts, _MAX_MULTIPLE_CHOICE_ATTEMPTS)
 
-            result = self._model.create_chat_completion(
-                messages,
-                temperature = temperature,
-                seed = seed,
-                max_tokens = _DEFAULT_MAX_TOKENS,
-            )["choices"][0]["message"]["content"]
+                messages = self._construct_messages(prompt)
+                logging.info(f"Sending prompt with {len(prompt)} characters, beginning with: '{LocalModel._remove_newlines(prompt[:32])}'.")
 
-            answer = extract_choice_response(result)
+                result = self._model.create_chat_completion(
+                    messages,
+                    temperature = temperature,
+                    seed = seed,
+                    max_tokens = _DEFAULT_MAX_TOKENS,
+                )["choices"][0]["message"]["content"]
 
-            try:
-                idx = int(answer)
-            except (TypeError, ValueError):
-                continue
-            else:
-                if self._measurements is not None:
-                    self._measurements.publish_datum(
-                        self._channel, {'choices_calls': attempts}
-                    )
+                answer = extract_choice_response(result)
+                logging.info(f"From response beginning with {LocalModel._remove_newlines(result)[:32]}, Extracted choice: '{answer}'.")
 
-                return idx, responses[idx], {}
+                try:
+                    idx = responses.index(answer)
+                except (TypeError, ValueError):
+                    continue
+                else:
+                    if self._measurements is not None:
+                        self._measurements.publish_datum(
+                            self._channel, {'choices_calls': attempts}
+                        )
 
-        raise language_model.InvalidResponseError(
-            (f'Too many multiple choice attempts.\nLast attempt: {result}, ' +
-             f'extracted: {answer}')
-        )
+                    return idx, responses[idx], {}
+
+            raise language_model.InvalidResponseError(
+                (f'Too many multiple choice attempts.\nLast attempt: {result}, ' +
+                f'extracted: {answer}')
+            )
 
 if __name__ == "__main__":
     model = LocalModel()
