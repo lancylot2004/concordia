@@ -20,7 +20,7 @@ import re
 
 def _extract_parenthesized_choice(sample: str):
   """Given text formatted as 'lorum(a)ipsum', return 'a'."""
-  match = re.search(r'\(?(\w)\)', sample)
+  match = re.search(r'\(?(\w)\)?', sample)
   if match:
     return match.group(1)
   else:
