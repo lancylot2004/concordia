@@ -18,12 +18,21 @@ Recommended model name is 'google/gemma-2-9b-it'
 """
 
 from collections.abc import Collection, Sequence
+import logging
+from textwrap import dedent
 
+from accelerate import Accelerator
 from concordia.language_model import language_model
 from concordia.utils import measurements as measurements_lib
+from mistral_common.protocol.instruct.messages import AssistantMessage
+from mistral_common.protocol.instruct.messages import SystemMessage
+from mistral_common.protocol.instruct.messages import UserMessage
+from mistral_common.protocol.instruct.request import ChatCompletionRequest
+from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
 import numpy as np
 import torch
-from transformers import AutoModelForCausalLM, Gemma2ForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM
+from transformers import MistralForCausalLM
 from typing_extensions import override
 
 _DEFAULT_MAX_TOKENS = 5000
@@ -45,48 +54,46 @@ class LocalModel(language_model.LanguageModel):
         channel: The channel to write the statistics to.
         """
 
-        # model_id = "bartowski/gemma-2-9b-it-GGUF"
-        # filename = "gemma-2-9b-it-IQ4_XS.gguf"
+        logging.basicConfig(level = logging.INFO, format = '[%(levelname)s] %(asctime)s :: %(message)s')
 
-        model_id = "google/gemma-2-2b-it"
+        model_id = "TheBloke/Mistral-7B-Instruct-v0.2-GGUF"
+        gguf_file = "mistral-7b-instruct-v0.2.Q4_K_M.gguf"
 
-        self._tokeniser = AutoTokenizer.from_pretrained(model_id)
-        self._model = AutoModelForCausalLM.from_pretrained(model_id)
-        self._model.to("mps")
+        logging.info(f"Loading tokeniser and model {model_id}")
+        self._tokeniser = MistralTokenizer.v1()
+        self._model = AutoModelForCausalLM.from_pretrained(model_id, gguf_file = gguf_file)
 
-        self._tokeniser: AutoTokenizer
-        self._model: Gemma2ForCausalLM
+        logging.info("Preparing model using accelerator")
+        self._accelerator = Accelerator()
+        self._model, self._tokeniser = self._accelerator.prepare(self._model, self._tokeniser)
+        logging.info("Model prepared on {self._accelerator.device}")
+
+        # logging.info("Moving model to MPS")
+        # self._model.to("mps")
+
+        self._model: MistralForCausalLM
 
         self._measurements = measurements
         self._channel = channel
 
     @staticmethod
-    def _construct_messages(prompt: str) -> list[dict[str, str]]:
-        return [
-            {
-                'role': 'user',
-                'content': (
-                    'You always continue sentences provided '
-                    'by the user and you never repeat what '
-                    'the user has already said. All responses must end with a '
-                    'period. Try not to use lists, but if you must, then '
-                    'always delimit list items using either '
-                    r"semicolons or single newline characters ('\n'), never "
-                    r"delimit list items with double carriage returns ('\n\n')."
-                    "Question: Is Jake a turtle?\nAnswer: Jake is "
-                ),
-            },
-            {'role': 'assistant', 'content': 'not a turtle.'},
-            {
-                'role': 'user',
-                'content': (
-                    'Question: What is Priya doing right now?\nAnswer: '
-                    + 'Priya is currently '
-                ),
-            },
-            {'role': 'assistant', 'content': 'sleeping.'},
-            {'role': 'user', 'content': prompt},
-        ]
+    def _construct_messages(prompt: str) -> ChatCompletionRequest:
+        return ChatCompletionRequest(messages = [
+            SystemMessage(content = (
+                    'You always continue sentences provided by the user and '
+                    'you never repeat what the user already said.'
+                )),
+            UserMessage(content =
+                'Question: Is Jake a turtle?\nAnswer: Jake is ',
+            ),
+            AssistantMessage(content = 'not a turtle.'),
+            UserMessage(content = (
+                    'Question: What is Priya doing right now?\n'
+                    'Answer: Priya is currently '
+            )),
+            AssistantMessage(content = 'sleeping.'),
+            UserMessage(content = prompt),
+        ])
 
     @override
     def sample_text(
@@ -104,21 +111,20 @@ class LocalModel(language_model.LanguageModel):
         max_tokens = min(max_tokens, _DEFAULT_MAX_TOKENS)
 
         messages = self._construct_messages(prompt)
-        print(f"Sending: {len(messages)}, ", end = "")
+        logging.info(f"Sending prompt with {len(prompt)} characters, beginning with: '{prompt[:32]}'.")
 
-        ids = self._tokeniser \
-            .apply_chat_template(messages, return_tensors = 'pt') \
-            .to(self._model.device)
-        print(f"with {len(ids)} tokens, ", end = "")
+        tokens = self._tokeniser.encode_chat_completion(messages).tokens
+        logging.info(f"Tokenised prompt with {len(tokens)} tokens.")
+        input_ids = torch.tensor([tokens], device = self._accelerator.device)
         outputs = self._model.generate(
-            ids,
-            max_new_tokens = max_tokens,
-            do_sample = True,
-            temperature = temperature,
-            seed = seed,
+            input_ids,
+            max_new_tokens=max_tokens,
+            do_sample=True,
+            temperature=temperature,
+            seed=seed,
         )
-        result = self._tokeniser.decode(outputs[0], skip_special_tokens = True)
-        print(f"completed.")
+        result = self._tokeniser.decode(outputs[0].tolist())
+        logging.info(f"Generated response with {len(result)} characters, beginning with: '{result[:32]}'.")
 
         if self._measurements is not None:
             self._measurements.publish_datum(
@@ -144,23 +150,29 @@ class LocalModel(language_model.LanguageModel):
             augmented_prompt = prompt + response
             messages = self._construct_messages(augmented_prompt)
 
-            input_ids = self._tokeniser \
-                .apply_chat_template(messages, return_tensors='pt') \
-                .to(self._model.device)
+            tokens = self._tokeniser.encode_chat_completion(messages).tokens
+            logging.info(f"Testing response {response} with prompt of {len(tokens)} tokens.")
 
             with torch.no_grad():
-                outputs = self._model(input_ids=input_ids, labels=input_ids)
+                outputs = self._model(input_ids = tokens, labels = tokens)
 
                 loss = outputs.loss
                 score = -loss.item()
 
+            logging.info(f"Scored response {response} with score {score}.")
             return score
 
-        # Score each response
+        logging.info(f"Scoring {len(responses)} responses.")
         scores = np.array([_score_response(r) for r in responses])
 
         # Find the index of the highest score
         idx = np.argmax(scores)
         max_str = responses[idx]
+        logging.info(f"Chose response {max_str} with score {scores[idx]}.")
 
         return idx, max_str, {r: scores[i] for i, r in enumerate(responses)}
+
+if __name__ == "__main__":
+    model = LocalModel()
+    print(model.sample_text("Hello, how are you?"))
+    print(model.sample_choice("What is the capital of France", ["London", "Paris", "Your Mom"]))
