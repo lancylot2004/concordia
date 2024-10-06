@@ -83,11 +83,11 @@ class LlamaModel(language_model.LanguageModel):
         timeout: float = language_model.DEFAULT_TIMEOUT_SECONDS,
         seed: int | None = None,
     ) -> str:
-        with LocalModel._lock:
+        with LlamaModel._lock:
             max_tokens = min(max_tokens, _DEFAULT_MAX_TOKENS)
 
             messages = self._construct_messages(prompt)
-            logging.info(f"Sending prompt with {len(prompt)} characters, beginning with: '{LocalModel._remove_newlines(prompt[:32])}'.")
+            logging.info(f"Sending prompt with {len(prompt)} characters, beginning with: '{LlamaModel._remove_newlines(prompt[:32])}'.")
 
             result = self._model.create_chat_completion(
                 messages,
@@ -96,7 +96,7 @@ class LlamaModel(language_model.LanguageModel):
                 max_tokens = max_tokens,
             )["choices"][0]["message"]["content"]
 
-            logging.info(f"Generated response with {len(result)} characters, beginning with: '{LocalModel._remove_newlines(result[:32])}'.")
+            logging.info(f"Generated response with {len(result)} characters, beginning with: '{LlamaModel._remove_newlines(result[:32])}'.")
 
             if self._measurements is not None:
                 self._measurements.publish_datum(
@@ -117,7 +117,7 @@ class LlamaModel(language_model.LanguageModel):
         *,
         seed: int | None = None,
     ) -> tuple[int, str, dict[str, float]]:
-        with LocalModel._lock:
+        with LlamaModel._lock:
             prompt = dedent(f"""
                 {prompt}
 
@@ -132,7 +132,7 @@ class LlamaModel(language_model.LanguageModel):
                 temperature = dynamically_adjust_temperature(attempts, _MAX_MULTIPLE_CHOICE_ATTEMPTS)
 
                 messages = self._construct_messages(prompt)
-                logging.info(f"Sending prompt with {len(prompt)} characters, beginning with: '{LocalModel._remove_newlines(prompt[:32])}'.")
+                logging.info(f"Sending prompt with {len(prompt)} characters, beginning with: '{LlamaModel._remove_newlines(prompt[:32])}'.")
 
                 result = self._model.create_chat_completion(
                     messages,
@@ -142,7 +142,7 @@ class LlamaModel(language_model.LanguageModel):
                 )["choices"][0]["message"]["content"]
 
                 answer = extract_choice_response(result)
-                logging.info(f"From response beginning with {LocalModel._remove_newlines(result)[:32]}, Extracted choice: '{answer}'.")
+                logging.info(f"From response beginning with {LlamaModel._remove_newlines(result)[:32]}, Extracted choice: '{answer}'.")
 
                 try:
                     idx = responses.index(answer)
@@ -162,6 +162,6 @@ class LlamaModel(language_model.LanguageModel):
             )
 
 if __name__ == "__main__":
-    model = LocalModel()
+    model = LlamaModel()
     print(model.sample_text("Hello, how are you?"))
-    print(model.sample_choice("What is the biggest city in the UK", ["London", "Paris", "Your Mom"]))
+    print(model.sample_choice("What is the biggest city in the UK? a) London, b) Paris, c) Mars", ["a", "b", "c"]))

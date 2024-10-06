@@ -3,8 +3,10 @@ import logging
 from textwrap import dedent
 from threading import Lock
 
+import numpy as np
 import torch
 
+from accelerate import Accelerator
 from concordia.language_model import language_model
 from concordia.utils import measurements as measurements_lib
 from concordia.utils.sampling import extract_choice_response, dynamically_adjust_temperature
@@ -35,11 +37,14 @@ class TransformersModel(language_model.LanguageModel):
 
         logging.basicConfig(level = logging.INFO, format = "[%(levelname)s] %(asctime)s :: %(message)s")
 
-        model_id = "google/gemma-2-9b-it"
+        model_id = "google/gemma-2-2b-it"
 
         logging.info(f"Loading tokeniser and model {model_id}")
         self._tokeniser = AutoTokenizer.from_pretrained(model_id)
         self._model = AutoModelForCausalLM.from_pretrained(model_id)
+
+        self._accelerator = Accelerator()
+        self._model, self._tokeniser = self._accelerator.prepare(self._model, self._tokeniser)
 
         self._model : Gemma2ForCausalLM
 
@@ -91,11 +96,13 @@ class TransformersModel(language_model.LanguageModel):
             messages = self._construct_messages(prompt)
             logging.info(f"Sending prompt with {len(prompt)} characters, beginning with: '{TransformersModel._remove_newlines(prompt[:32])}'.")
 
-            tokens = self._tokeniser.encode_chat_completion(messages).tokens
+            tokens = self._tokeniser \
+                .apply_chat_template(messages, return_tensors="pt", return_dict=True) \
+                .to(self._accelerator.device)
+
             logging.info(f"Tokenised prompt with {len(tokens)} tokens.")
-            input_ids = torch.tensor([tokens], device = self._accelerator.device)
             outputs = self._model.generate(
-                input_ids,
+                **tokens,
                 max_new_tokens=max_tokens,
                 do_sample=True,
                 temperature=temperature,
@@ -136,15 +143,18 @@ class TransformersModel(language_model.LanguageModel):
             for attempts in range(_MAX_MULTIPLE_CHOICE_ATTEMPTS):
                 # Increase temperature after the first failed attempt.
                 temperature = dynamically_adjust_temperature(attempts, _MAX_MULTIPLE_CHOICE_ATTEMPTS)
+                temperature = max(temperature, np.nextafter(0, 1))
 
                 messages = self._construct_messages(prompt)
                 logging.info(f"Sending prompt with {len(prompt)} characters, beginning with: '{TransformersModel._remove_newlines(prompt[:32])}'.")
 
-                tokens = self._tokeniser.encode_chat_completion(messages).tokens
+                tokens = self._tokeniser \
+                    .apply_chat_template(messages, return_tensors="pt", return_dict=True) \
+                    .to(self._accelerator.device)
+
                 logging.info(f"Tokenised prompt with {len(tokens)} tokens.")
-                input_ids = torch.tensor([tokens], device = self._accelerator.device)
                 outputs = self._model.generate(
-                    input_ids,
+                    **tokens,
                     max_new_tokens=_DEFAULT_MAX_TOKENS,
                     do_sample=True,
                     temperature=temperature,
@@ -175,4 +185,4 @@ class TransformersModel(language_model.LanguageModel):
 if __name__ == "__main__":
     model = TransformersModel()
     print(model.sample_text("Hello, how are you?"))
-    print(model.sample_choice("What is the biggest city in the UK", ["London", "Paris", "Your Mom"]))
+    print(model.sample_choice("What is the biggest city in the UK? a) London, b) Paris, c) Mars", ["a", "b", "c"]))
