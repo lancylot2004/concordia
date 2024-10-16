@@ -16,6 +16,7 @@
 
 from collections.abc import Collection, Sequence
 import json
+import logging
 
 from concordia.language_model import language_model
 from concordia.utils import measurements as measurements_lib
@@ -24,7 +25,7 @@ import ollama
 from typing_extensions import override
 
 
-_MAX_MULTIPLE_CHOICE_ATTEMPTS = 20
+_MAX_MULTIPLE_CHOICE_ATTEMPTS = 10
 _DEFAULT_TEMPERATURE = 0.5
 _DEFAULT_TERMINATORS = ()
 _DEFAULT_SYSTEM_MESSAGE = (
@@ -68,6 +69,9 @@ class OllamaLanguageModel(language_model.LanguageModel):
     self._measurements = measurements
     self._channel = channel
 
+    logging.basicConfig(level = logging.INFO, format = "[%(levelname)s] %(asctime)s :: %(message)s")
+    logging.info("Setup")
+
   @override
   def sample_text(
       self,
@@ -81,6 +85,8 @@ class OllamaLanguageModel(language_model.LanguageModel):
   ) -> str:
     del max_tokens, timeout, seed, temperature  # Unused.
 
+    logging.info(f"Sent prompt, {len(prompt)} characters, beginning: \"{prompt[:32]}\".")
+
     prompt_with_system_message = f'{self._system_message}\n\n{prompt}'
 
     terminators = self._terminators + list(terminators)
@@ -91,7 +97,9 @@ class OllamaLanguageModel(language_model.LanguageModel):
         options={'stop': terminators},
         keep_alive='10m',
     )
-    result = response.response
+    result = response['response']
+
+    logging.info(f"-> Generated response, {len(result)} characters, beginning: \"{result[:32]}\".")
 
     if self._measurements is not None:
       self._measurements.publish_datum(
@@ -113,6 +121,9 @@ class OllamaLanguageModel(language_model.LanguageModel):
     template = {'choice': '', 'single sentence explanation': ''}
     sample = ''
     answer = ''
+
+    logging.info(f"Sent multiple choice, {len(prompt)} characters, {len(responses)} options, beginning: \"{prompt[:32]}\".")
+
     for attempts in range(_MAX_MULTIPLE_CHOICE_ATTEMPTS):
       # Increase temperature after the first failed attempt.
       temperature = sampling.dynamically_adjust_temperature(
@@ -127,7 +138,7 @@ class OllamaLanguageModel(language_model.LanguageModel):
           keep_alive='10m',
       )
       try:
-        json_data_response = json.loads(response.response)
+        json_data_response = json.loads(response["response"])
       except json.JSONDecodeError:
         continue
       sample_or_none = json_data_response.get('choice', None)
@@ -146,7 +157,9 @@ class OllamaLanguageModel(language_model.LanguageModel):
       answer = sampling.extract_choice_response(sample)
       try:
         idx = responses.index(answer)
+        print(f'-> Extracted response: {answer}, index: {idx}. Answer beginning f{sample[:32]}')
       except ValueError:
+        print(f"-> Extracted response: {answer}, not found in responses.")
         continue
       else:
         if self._measurements is not None:
